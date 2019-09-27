@@ -2204,8 +2204,13 @@ class Typer extends Namer
         traverse(rest)
       case stat :: rest =>
         val stat1 = typed(stat)(ctx.exprContext(stat, exprOwner))
-        checkStatementPurity(stat1)(stat, exprOwner)
-        buf += stat1
+        val stat2 = if (ctx.settings.YnoDiscardValues.value && !isSelfOrSuperConstrCall(stat1)) {
+                       adapt(stat1, defn.UnitType)
+                    } else {
+                       checkStatementPurity(stat1)(stat, exprOwner)
+                       stat1
+                    }
+        buf += stat2
         traverse(rest)
       case nil =>
         buf.toList
@@ -2900,7 +2905,7 @@ class Typer extends Namer
         return readapt(tree.cast(captured))
 
       // drop type if prototype is Unit
-      if (pt isRef defn.UnitClass) {
+      if (! ctx.settings.YnoDiscardValues.value && (pt isRef defn.UnitClass)) {
         // local adaptation makes sure every adapted tree conforms to its pt
         // so will take the code path that decides on inlining
         val tree1 = adapt(tree, WildcardType, locked)

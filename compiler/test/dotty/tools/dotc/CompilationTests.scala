@@ -251,6 +251,15 @@ class CompilationTests extends ParallelTesting {
 
     tests.foreach(_.delete())
   }
+
+  @Test def ynoDiscardValues: Unit = {
+      implicit val testGroup: TestGroup = TestGroup("YnoDiscardValues")
+      compileFilesInDir("tests/Yno-discard-values/run", 
+            defaultOptions.and("-Yno-discard-values").and("-Ydebug").and("-Ycheck:all")
+       ).checkRuns()
+  }
+
+
 }
 
 object CompilationTests {

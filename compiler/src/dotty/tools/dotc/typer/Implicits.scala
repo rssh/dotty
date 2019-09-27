@@ -654,7 +654,7 @@ trait Implicits { self: Typer =>
     record("inferView")
     if    ((to isRef defn.AnyClass)
         || (to isRef defn.ObjectClass)
-        || (to isRef defn.UnitClass)
+      //  || (to isRef defn.UnitClass)
         || (from.tpe isRef defn.NothingClass)
         || (from.tpe isRef defn.NullClass)
         || !(ctx.mode is Mode.ImplicitsEnabled)
