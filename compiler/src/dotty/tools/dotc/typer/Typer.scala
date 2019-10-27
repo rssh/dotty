@@ -2203,7 +2203,9 @@ class Typer extends Namer
         traverse(rest)
       case stat :: rest =>
         val stat1 = typed(stat)(ctx.exprContext(stat, exprOwner))
-        val stat2 = if (ctx.settings.YnoDiscardValues.value && !isSelfOrSuperConstrCall(stat1)) {
+        val stat2 = if (ctx.settings.YnoDiscardValues.value && 
+                        ctx.phase.isTyper &&
+                       !isSelfOrSuperConstrCall(stat1) ) {
                        adapt(stat1, defn.UnitType)
                     } else {
                        checkStatementPurity(stat1)(stat, exprOwner)
