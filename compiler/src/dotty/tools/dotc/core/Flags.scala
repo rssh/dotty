@@ -442,7 +442,7 @@ object Flags {
     Scala2ExistentialCommon, Mutable, Opaque, Touched, JavaStatic,
     OuterOrCovariant, LabelOrContravariant, CaseAccessor,
     Extension, NonMember, Implicit, Given, Permanent, Synthetic,
-    SuperAccessorOrScala2x, Inline)
+    SuperAccessorOrScala2x, Inline, Macro)
 
   /** Flags that are not (re)set when completing the denotation, or, if symbol is
    *  a top-level class or object, when completing the denotation once the class
@@ -526,7 +526,7 @@ object Flags {
   val DeferredOrLazyOrMethod: FlagSet        = Deferred | Lazy | Method
   val DeferredOrTermParamOrAccessor: FlagSet = Deferred | ParamAccessor | TermParam           // term symbols without right-hand sides
   val DeferredOrTypeParam: FlagSet           = Deferred | TypeParam                           // type symbols without right-hand sides
-  val EnumValue: FlagSet                     = Enum | JavaStatic | StableRealizable           // A Scala enum value
+  val EnumValue: FlagSet                     = Enum | StableRealizable           // A Scala enum value
   val StableOrErased: FlagSet                = Erased | StableRealizable                      // Assumed to be pure
   val ExtensionMethod: FlagSet               = Extension | Method
   val FinalOrInline: FlagSet                 = Final | Inline

@@ -99,14 +99,15 @@ object Inferencing {
       inst
     }
 
-    private[this] var toMaximize: Boolean = false
+    private var toMaximize: Boolean = false
 
     def apply(x: Boolean, tp: Type): Boolean = tp.dealias match {
       case _: WildcardType | _: ProtoType =>
         false
-      case tvar: TypeVar
-      if !tvar.isInstantiated && ctx.typerState.constraint.contains(tvar) =>
-        force.appliesTo(tvar) && {
+      case tvar: TypeVar if !tvar.isInstantiated =>
+        force.appliesTo(tvar)
+        && ctx.typerState.constraint.contains(tvar)
+        && {
           val direction = instDirection(tvar.origin)
           def avoidBottom =
             !force.allowBottom &&

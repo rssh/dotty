@@ -25,7 +25,7 @@ import Constants._
 import ProtoTypes._
 import ErrorReporting._
 import reporting.diagnostic.Message
-import Inferencing.fullyDefinedType
+import Inferencing.{fullyDefinedType, isFullyDefined}
 import Trees._
 import transform.SymUtils._
 import transform.TypeUtils._
@@ -80,7 +80,7 @@ object Implicits {
     /** The implicit references */
     def refs: List[ImplicitRef]
 
-    private[this] var SingletonClass: ClassSymbol = null
+    private var SingletonClass: ClassSymbol = null
 
     /** Widen type so that it is neither a singleton type nor a type that inherits from scala.Singleton. */
     private def widenSingleton(tp: Type)(implicit ctx: Context): Type = {
@@ -392,7 +392,8 @@ object Implicits {
     def whyNoConversion(implicit ctx: Context): String = ""
   }
 
-  class NoMatchingImplicits(val expectedType: Type, val argument: Tree, constraint: Constraint = OrderingConstraint.empty) extends SearchFailureType {
+  class NoMatchingImplicits(val expectedType: Type, val argument: Tree, constraint: Constraint = OrderingConstraint.empty)
+  extends SearchFailureType {
 
     /** Replace all type parameters in constraint by their bounds, to make it clearer
      *  what was expected
@@ -728,7 +729,7 @@ trait Implicits { self: Typer =>
 
   lazy val synthesizedQuoteContext: SpecialHandler =
     (formal, span) => implicit ctx =>
-      if (ctx.inInlineMethod || enclosingInlineds.nonEmpty) ref(defn.QuoteContext_macroContext)
+      if (ctx.inMacro || enclosingInlineds.nonEmpty) ref(defn.QuoteContext_macroContext)
       else EmptyTree
 
   lazy val synthesizedTupleFunction: SpecialHandler =
@@ -1215,15 +1216,21 @@ trait Implicits { self: Typer =>
               if (ctx == NoContext) ctx
               else ctx.freshOver(FindHiddenImplicitsCtx(ctx.outer)).addMode(Mode.FindHiddenImplicits)
 
-            inferImplicit(fail.expectedType, fail.argument, arg.span)(
-              FindHiddenImplicitsCtx(ctx)) match {
-              case s: SearchSuccess => hiddenImplicitNote(s)
-              case f: SearchFailure =>
-                f.reason match {
-                  case ambi: AmbiguousImplicits => hiddenImplicitNote(ambi.alt1)
-                  case r => ""
-                }
-            }
+            if (fail.expectedType eq pt) || isFullyDefined(fail.expectedType, ForceDegree.none) then
+              inferImplicit(fail.expectedType, fail.argument, arg.span)(
+                FindHiddenImplicitsCtx(ctx)) match {
+                case s: SearchSuccess => hiddenImplicitNote(s)
+                case f: SearchFailure =>
+                  f.reason match {
+                    case ambi: AmbiguousImplicits => hiddenImplicitNote(ambi.alt1)
+                    case r => ""
+                  }
+              }
+            else
+              // It's unsafe to search for parts of the expected type if they are not fully defined,
+              // since these come with nested contexts that are lost at this point. See #7249 for an
+              // example where searching for a nested type causes an infinite loop.
+              ""
         }
         msg(userDefined.getOrElse(
           em"no implicit argument of type $pt was found${location("for")}"))() ++
@@ -1947,7 +1954,7 @@ final class SearchRoot extends SearchHistory {
 
 /** A set of term references where equality is =:= */
 final class TermRefSet(implicit ctx: Context) {
-  private[this] val elems = new java.util.LinkedHashMap[TermSymbol, List[Type]]
+  private val elems = new java.util.LinkedHashMap[TermSymbol, List[Type]]
 
   def += (ref: TermRef): Unit = {
     val pre = ref.prefix
