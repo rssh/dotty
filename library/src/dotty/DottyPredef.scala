@@ -38,4 +38,7 @@ object DottyPredef {
   }
 
   inline def summon[T](given x: T): x.type = x
+
+  implicit final def discardValue[T](x: T): Unit = ()
+
 }

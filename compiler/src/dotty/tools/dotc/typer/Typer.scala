@@ -2959,7 +2959,7 @@ class Typer extends Namer
         if (isFullyDefined(wtp, force = ForceDegree.all) &&
             ctx.typerState.constraint.ne(prevConstraint)) readapt(tree)
         else err.typeMismatch(tree, pt, failure)
-      if (ctx.mode.is(Mode.ImplicitsEnabled) && tree.typeOpt.isValueType)
+      if (ctx.mode.is(Mode.ImplicitsEnabled) && tree.typeOpt.isValueType) 
         inferView(tree, pt) match {
           case SearchSuccess(found: ExtMethodApply, _, _) =>
             found // nothing to check or adapt for extension method applications
