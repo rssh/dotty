@@ -242,7 +242,7 @@ import transform.SymUtils._
     }
   }
 
-  class TypeMismatch(found: Type, expected: Type, addenda: => String*)(using Context)
+  class TypeMismatch(found: Type,  expected: Type, inTree: Option[untpd.Tree],  addenda: => String*)(using Context)
     extends TypeMismatchMsg(found, expected)(TypeMismatchID):
 
     // replace constrained TypeParamRefs and their typevars by their bounds where possible
@@ -279,9 +279,11 @@ import transform.SymUtils._
       val (where, printCtx) = Formatting.disambiguateTypes(found2, expected2)
       val whereSuffix = if (where.isEmpty) where else s"\n\n$where"
       val (foundStr, expectedStr) = Formatting.typeDiff(found2, expected2)(using printCtx)
+      val inStr = inTree.map(x => s"\nin: ${x.show}").getOrElse("")
       s"""|Found:    $foundStr
-          |Required: $expectedStr""".stripMargin
-        + whereSuffix + postScript
+          |Required: $expectedStr"""".stripMargin
+        + inStr
+        + whereSuffix + postScript 
   end TypeMismatch
 
   class NotAMember(site: Type, val name: Name, selected: String, addendum: => String = "")(using Context)

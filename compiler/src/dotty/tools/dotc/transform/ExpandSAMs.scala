@@ -172,7 +172,7 @@ class ExpandSAMs extends MiniPhase:
 
       case _ =>
         val found = tpe.baseType(defn.Function1)
-        report.error(TypeMismatch(found, tpe), tree.srcPos)
+        report.error(TypeMismatch(found, tpe, Some(tree)), tree.srcPos)
         tree
     }
   }
