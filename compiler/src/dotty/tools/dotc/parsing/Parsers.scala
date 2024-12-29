@@ -653,6 +653,16 @@ object Parsers {
         commaSeparatedRest(part(), part)
       }
 
+    /** <part> {`,` <part>} [','] 
+     * and next token is RParent
+     * return parts and existence of trailing comma
+     */
+    def commaSeparatedInParens[T](part: () => T, rParen: Token): (List[T], Boolean) =
+      in.currentRegion.withCommasExpected {
+         commaSeparatedRestInParen(part(), part, rParen)
+      }
+
+
     /** {`,` <part>}
      *
      *  currentRegion.commasExpected has to be set separately.
@@ -665,6 +675,24 @@ object Parsers {
           ts += part()
         ts.toList
       else leading :: Nil
+
+    /**
+     * { `,` <part> [`,`] }
+     */
+    def commaSeparatedRestInParen[T](leading: T, part: () => T, rParen: Token): (List[T], Boolean) =
+      if in.token == COMMA then
+        val ts = new ListBuffer[T] += leading
+        var trailingComma = false
+        while in.token == COMMA do
+          in.nextToken()
+          if in.token != rParen then
+             ts += part()
+          else
+             trailingComma = true
+        (ts.toList, trailingComma)
+      else
+        (leading::Nil, false)      
+
 
     def maybeNamed(op: () => Tree): () => Tree = () =>
       if isIdent && in.lookahead.token == EQUALS && in.featureEnabled(Feature.namedTuples) then
@@ -1735,7 +1763,7 @@ object Parsers {
             erasedArgs.addOne(isErasedKw)
             if isErasedKw then in.skipToken()
           addErased()
-          val args =
+          val (args, trailingComma) =
             in.currentRegion.withCommasExpected:
               funArgType() match
                 case Ident(name) if name != tpnme.WILDCARD && in.isColon =>
@@ -1743,14 +1771,16 @@ object Parsers {
                     atSpan(start):
                       addErased()
                       typedFunParam(in.offset, ident(), imods)
-                  commaSeparatedRest(
+                  commaSeparatedRestInParen(
                     typedFunParam(paramStart, name.toTermName, imods),
-                    () => funParam(in.offset, imods))
+                    () => funParam(in.offset, imods),
+                    RPAREN
+                  )
                 case t =>
                   def funArg() =
                     erasedArgs.addOne(false)
                     funArgType()
-                  commaSeparatedRest(t, funArg)
+                  commaSeparatedRestInParen(t, funArg, RPAREN)
           accept(RPAREN)
 
           val intoAllowed =
@@ -1779,10 +1809,11 @@ object Parsers {
           val args1 = args.mapConserve(sanitize)
 
           if in.isArrow || isPureArrow || erasedArgs.contains(true) then
+            // TODO: report if trailing comma ?
             functionRest(args)
           else
             val tuple = atSpan(start):
-              makeTupleOrParens(args.mapConserve(convertToElem))
+              makeTupleOrParens(args.mapConserve(convertToElem), trailingComma)
             typeRest:
               infixTypeRest(inContextBound):
                 refinedTypeRest:
@@ -2067,7 +2098,8 @@ object Parsers {
     def simpleType1() = simpleTypeRest {
       if in.token == LPAREN then
         atSpan(in.offset) {
-          makeTupleOrParens(inParensWithCommas(argTypes(namedOK = false, wildOK = true, tupleOK = true)))
+          val (args, trailingComma) = inParensWithCommas(argTypes(namedOK = false, wildOK = true, tupleOK = true, trailingCommaOK = true))
+          makeTupleOrParens(args, trailingComma)
         }
       else if in.token == LBRACE then
         atSpan(in.offset) { RefinedTypeTree(EmptyTree, refinement(indentOK = false)) }
@@ -2147,13 +2179,13 @@ object Parsers {
       atSpan(startOffset(t), startOffset(id)) { Select(t, id.name) }
     }
 
-    /**   ArgTypes          ::=  Type {`,' Type}
-     *                        |  NamedTypeArg {`,' NamedTypeArg}
+    /**   ArgTypes          ::=  Type {`,' Type} [',']
+     *                        |  NamedTypeArg {`,' NamedTypeArg} 
      *    NamedTypeArg      ::=  id `=' Type
      *    NamesAndTypes     ::=  NameAndType {‘,’ NameAndType}
      *    NameAndType       ::=  id ':' Type
      */
-    def argTypes(namedOK: Boolean, wildOK: Boolean, tupleOK: Boolean): List[Tree] =
+    def argTypes(namedOK: Boolean, wildOK: Boolean, tupleOK: Boolean, trailingCommaOK: Boolean): (List[Tree], Boolean) =
       def argType() =
         val t = typ()
         if wildOK then t else rejectWildcardType(t)
@@ -2170,12 +2202,19 @@ object Parsers {
           acceptColon()
           NamedArg(name, argType())
 
+      def commaSeparatedMbRParen[T](op: ()=>T): (List[T], Boolean) =
+        if trailingCommaOK && in.featureEnabled(Feature.trailingCommas) then 
+           commaSeparatedInParens(op, RPAREN)
+        else
+           (commaSeparated(op), false)
+
+
       if namedOK && isIdent && in.lookahead.token == EQUALS then
-        commaSeparated(() => namedArgType())
+        commaSeparatedMbRParen(() => namedArgType())
       else if tupleOK && isIdent && in.lookahead.isColon && in.featureEnabled(Feature.namedTuples) then
-        commaSeparated(() => namedElem())
+        commaSeparatedMbRParen(() => namedElem())
       else
-        commaSeparated(() => argType())
+        commaSeparatedMbRParen(() => argType())
     end argTypes
 
     def paramTypeOf(core: () => Tree): Tree =
@@ -2223,7 +2262,8 @@ object Parsers {
      *  NamedTypeArgs ::= `[' NamedTypeArg {`,' NamedTypeArg} `]'
      */
     def typeArgs(namedOK: Boolean, wildOK: Boolean): List[Tree] =
-      inBracketsWithCommas(argTypes(namedOK, wildOK, tupleOK = false))
+      val (trees, _) = inBracketsWithCommas(argTypes(namedOK, wildOK, tupleOK = false, trailingCommaOK=false))
+      trees
 
     /** Refinement ::= `{' RefineStatSeq `}'
      */
@@ -2323,7 +2363,8 @@ object Parsers {
       val t: Tree =
         if in.token == LPAREN then
           var t: Tree = atSpan(in.offset):
-            makeTupleOrParens(inParensWithCommas(commaSeparated(exprInParens)))
+            val (exprs, trailingComma) = inParensWithCommas(commaSeparatedInParens(exprInParens, RPAREN))
+            makeTupleOrParens(exprs, trailingComma)
           if in.token != altToken then
             if toBeContinued(altToken) then
               t = inSepRegion(InCond) {
@@ -2741,7 +2782,10 @@ object Parsers {
           placeholderParams = param :: placeholderParams
           atSpan(start) { Ident(pname) }
         case LPAREN =>
-          atSpan(in.offset) { makeTupleOrParens(inParensWithCommas(exprsInParensOrBindings())) }
+          atSpan(in.offset) { 
+            val (exprs, trailingComma) = inParensWithCommas(exprsInParensOrBindings())
+            makeTupleOrParens(exprs, trailingComma) 
+          }
         case LBRACE | INDENT =>
           canApply = false
           blockExpr()
@@ -2826,8 +2870,8 @@ object Parsers {
      *    Bindings          ::=  Binding {`,' Binding}
      *    NamedExprInParens ::=  id '=' ExprInParens
      */
-    def exprsInParensOrBindings(): List[Tree] =
-      if in.token == RPAREN then Nil
+    def exprsInParensOrBindings(): (List[Tree], Boolean) =
+      if in.token == RPAREN then (Nil, false)
       else in.currentRegion.withCommasExpected {
         var isFormalParams = false
         def exprOrBinding() =
@@ -2837,7 +2881,7 @@ object Parsers {
             val t = maybeNamed(exprInParens)()
             if t.isInstanceOf[ValDef] then isFormalParams = true
             t
-        commaSeparatedRest(exprOrBinding(), exprOrBinding)
+        commaSeparatedRestInParen(exprOrBinding(), exprOrBinding, RPAREN)
       }
 
     /** ParArgumentExprs ::= `(' [‘using’] [ExprsInParens] `)'
@@ -3011,12 +3055,12 @@ object Parsers {
               if (leading == LBRACE || in.token == CASE)
                 enumerators()
               else {
-                val pats = patternsOpt()
+                val (pats, trailingComma) = patternsOpt()
                 val pat =
                   if (in.token == RPAREN || pats.length > 1) {
                     wrappedEnums = false
                     accept(RPAREN)
-                    atSpan(start) { makeTupleOrParens(pats) } // note: alternatives `|' need to be weeded out by typer.
+                    atSpan(start) { makeTupleOrParens(pats, trailingComma) } // note: alternatives `|' need to be weeded out by typer.
                   }
                   else pats.head
                 generatorRest(pat, casePat = false) :: enumeratorsRest()
@@ -3220,7 +3264,10 @@ object Parsers {
       case USCORE =>
         wildcardIdent()
       case LPAREN =>
-        atSpan(in.offset) { makeTupleOrParens(inParensWithCommas(patternsOpt())) }
+        atSpan(in.offset) { 
+           val (patterns, trailingComma) = inParensWithCommas(patternsOpt())
+           makeTupleOrParens(patterns, trailingComma) 
+        }
       case QUOTE =>
         simpleExpr(Location.InPattern)
       case XMLSTART =>
@@ -3258,18 +3305,21 @@ object Parsers {
      *                      |  NamedPattern {‘,’ NamedPattern}
      *  NamedPattern      ::=  id '=' Pattern
      */
-    def patterns(location: Location = Location.InPattern): List[Tree] =
-      commaSeparated(maybeNamed(() => pattern(location)))
+    def patterns(location: Location = Location.InPattern): (List[Tree], Boolean) =
+      commaSeparatedInParens(maybeNamed(() => pattern(location)), RPAREN)
         // check that patterns are all named or all unnamed is done at desugaring
 
-    def patternsOpt(location: Location = Location.InPattern): List[Tree] =
-      if (in.token == RPAREN) Nil else patterns(location)
+    def patternsOpt(location: Location = Location.InPattern ): (List[Tree], Boolean) =
+      if (in.token == RPAREN) (Nil, false) else patterns(location)
 
     /** ArgumentPatterns  ::=  ‘(’ [Patterns] ‘)’
      *                      |  ‘(’ [Patterns ‘,’] PatVar ‘*’ ‘)’
      */
     def argumentPatterns(): List[Tree] =
-      inParensWithCommas(patternsOpt(Location.InPatternArgs))
+      val (patterns, trailingComma) = inParensWithCommas(patternsOpt(Location.InPatternArgs))
+      if (trailingComma) then
+          syntaxError(em"trailing comma in argumentPatterns is not allowed",in.offset)
+      patterns
 
 /* -------- MODIFIERS and ANNOTATIONS ------------------------------------------- */
 

@@ -544,9 +544,9 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
   def makeSelfDef(name: TermName, tpt: Tree)(using Context): ValDef =
     ValDef(name, tpt, EmptyTree).withFlags(PrivateLocal)
 
-  def makeTupleOrParens(ts: List[Tree])(using Context): Tree = ts match
+  def makeTupleOrParens(ts: List[Tree], tailComma: Boolean)(using Context): Tree = ts match
     case (t: NamedArg) :: Nil => Tuple(t :: Nil)
-    case t :: Nil => Parens(t)
+    case t :: Nil => if (tailComma) Tuple(ts) else Parens(t)
     case _ => Tuple(ts)
 
   def makeTuple(ts: List[Tree])(using Context): Tree = ts match

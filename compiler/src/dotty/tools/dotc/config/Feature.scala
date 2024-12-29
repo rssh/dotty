@@ -39,6 +39,7 @@ object Feature:
   val betterMatchTypeExtractors = experimental("betterMatchTypeExtractors")
   val quotedPatternsWithPolymorphicFunctions = experimental("quotedPatternsWithPolymorphicFunctions")
   val betterFors = experimental("betterFors")
+  var trailingCommas = experimental("trailingCommas")
 
   def experimentalAutoEnableFeatures(using Context): List[TermName] =
     defn.languageExperimentalFeatures
@@ -69,7 +70,8 @@ object Feature:
     (namedTuples, "Allow named tuples"),
     (modularity, "Enable experimental modularity features"),
     (betterMatchTypeExtractors, "Enable better match type extractors"),
-    (betterFors, "Enable improvements in `for` comprehensions")
+    (betterFors, "Enable improvements in `for` comprehensions"),
+    (trailingCommas, "Enable support for trailing commas")
   )
 
   // legacy language features from Scala 2 that are no longer supported.
@@ -171,6 +173,9 @@ object Feature:
 
   def fewerBracesEnabled(using Context) =
     sourceVersion.isAtLeast(`3.3`) || enabled(fewerBraces)
+
+  def trailingCommasEnabled(using Context) =
+    enabled(trailingCommas)
 
   /** If current source migrates to `version`, issue given warning message
    *  and return `true`, otherwise return `false`.
