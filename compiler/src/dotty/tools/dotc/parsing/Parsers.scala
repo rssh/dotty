@@ -677,6 +677,15 @@ object Parsers {
         commaSeparatedRest(part(), part)
       }
 
+    /** Like commaSeparated but also detects trailing comma.
+     *  Returns (list, trailingComma) where trailingComma is true if the list
+     *  ended with a comma followed by a closing token.
+     */
+    def commaSeparatedWithTrailingComma[T](part: () => T): (List[T], Boolean) =
+      in.currentRegion.withCommasExpected {
+        commaSeparatedRestWithTrailingComma(part(), part)
+      }
+
     /** {`,` <part>}
      *
      *  currentRegion.commasExpected has to be set separately.
@@ -689,6 +698,22 @@ object Parsers {
           ts += part()
         ts.toList
       else leading :: Nil
+
+    /** Like commaSeparatedRest but also detects trailing comma.
+     *  Returns (list, trailingComma) where trailingComma is true if the list
+     *  ended with a comma followed by a closing token (RPAREN, RBRACKET, RBRACE).
+     *  Used for tuple syntax like (A,) or (a,).
+     */
+    def commaSeparatedRestWithTrailingComma[T](leading: T, part: () => T): (List[T], Boolean) =
+      if in.token == COMMA then
+        val ts = new ListBuffer[T] += leading
+        while in.token == COMMA do
+          in.nextToken()
+          if in.token == RPAREN || in.token == RBRACKET || in.token == RBRACE then
+            return (ts.toList, true)
+          ts += part()
+        (ts.toList, false)
+      else (leading :: Nil, false)
 
     def maybeNamed(op: () => Tree): () => Tree = () =>
       if isIdent && in.lookahead.token == EQUALS && sourceVersion.enablesNamedTuples then
@@ -1953,7 +1978,7 @@ object Parsers {
           def erasedMods(): Modifiers =
             if isErased then addModifier(EmptyModifiers) else EmptyModifiers
           val leadingMods = erasedMods()
-          val args =
+          val (args, trailingComma) =
             in.currentRegion.withCommasExpected:
               funArgType() match
                 case Ident(name) if name != tpnme.WILDCARD && in.isColon =>
@@ -1961,19 +1986,19 @@ object Parsers {
                     atSpan(start):
                       val mods = erasedMods()
                       typedFunParam(in.offset, ident(), mods)
-                  commaSeparatedRest(
+                  commaSeparatedRestWithTrailingComma(
                     typedFunParam(paramStart, name.toTermName, leadingMods),
                     () => funParam(in.offset))
                 case t =>
                   if leadingMods.is(Erased) then
                     report.error(em"Erased function parameter must be named", leadingMods.mods.head.srcPos)
-                  commaSeparatedRest(t, funArgType)
+                  commaSeparatedRestWithTrailingComma(t, funArgType)
           accept(RPAREN)
           if in.isArrow || isPureArrow then
             functionRest(args)
           else
             val tuple = atSpan(start):
-              makeTupleOrParens(args.mapConserve(convertToElem))
+              makeTupleOrParens(args.mapConserve(convertToElem), trailingComma)
             typeRest:
               infixTypeRest(inContextBound):
                 refinedTypeRest:
@@ -2289,7 +2314,8 @@ object Parsers {
     def simpleType1() = simpleTypeRest {
       if in.token == LPAREN then
         atSpan(in.offset) {
-          makeTupleOrParens(inParensWithCommas(argTypes(namedOK = false, wildOK = true, tupleOK = true)))
+          val (ts, trailingComma) = inParensWithCommas(argTypesWithTrailingComma(namedOK = false, wildOK = true, tupleOK = true))
+          makeTupleOrParens(ts, trailingComma)
         }
       else if in.token == LBRACE then
         atSpan(in.offset) { RefinedTypeTree(EmptyTree, refinement(indentOK = false)) }
@@ -2378,6 +2404,12 @@ object Parsers {
      *    NameAndType       ::=  id ‘:’ Type
      */
     def argTypes(namedOK: Boolean, wildOK: Boolean, tupleOK: Boolean): List[Tree] =
+      argTypesWithTrailingComma(namedOK, wildOK, tupleOK)._1
+
+    /** Like argTypes but also returns whether a trailing comma was present.
+     *  Used for tuple syntax like (A,) to force tuple interpretation.
+     */
+    def argTypesWithTrailingComma(namedOK: Boolean, wildOK: Boolean, tupleOK: Boolean): (List[Tree], Boolean) =
       def wildCardCheck(gen: Tree): Tree =
         val t = gen
         if wildOK then t else rejectWildcardType(t)
@@ -2403,12 +2435,12 @@ object Parsers {
           NamedArg(name, argType())
 
       if namedOK && (isIdent && in.lookahead.token == EQUALS) then
-        commaSeparated(() => namedTypeArg())
+        commaSeparatedWithTrailingComma(() => namedTypeArg())
       else if tupleOK && isIdent && in.lookahead.isColon && sourceVersion.enablesNamedTuples then
-        commaSeparated(() => nameAndType())
+        commaSeparatedWithTrailingComma(() => nameAndType())
       else
-        commaSeparated(() => typeArg())
-    end argTypes
+        commaSeparatedWithTrailingComma(() => typeArg())
+    end argTypesWithTrailingComma
 
     def paramTypeOf(core: () => Tree): Tree =
       if in.token == ARROW || isPureArrow(nme.PUREARROW) then
@@ -3031,7 +3063,10 @@ object Parsers {
           placeholderParams = param :: placeholderParams
           atSpan(start) { Ident(pname) }
         case LPAREN =>
-          atSpan(in.offset) { makeTupleOrParens(inParensWithCommas(exprsInParensOrBindings())) }
+          atSpan(in.offset) {
+            val (ts, trailingComma) = inParensWithCommas(exprsInParensOrBindingsWithTrailingComma())
+            makeTupleOrParens(ts, trailingComma)
+          }
         case LBRACE | INDENT =>
           canApply = false
           blockExpr()
@@ -3138,12 +3173,18 @@ object Parsers {
     end newExpr
 
     /**   ExprsInParens     ::=  ExprInParens {`,' ExprInParens}
-     *                       |   NamedExprInParens {‘,’ NamedExprInParens}
+     *                       |   NamedExprInParens {',' NamedExprInParens}
      *    Bindings          ::=  Binding {`,' Binding}
      *    NamedExprInParens ::=  id '=' ExprInParens
      */
     def exprsInParensOrBindings(): List[Tree] =
-      if in.token == RPAREN then Nil
+      exprsInParensOrBindingsWithTrailingComma()._1
+
+    /** Like exprsInParensOrBindings but also returns whether a trailing comma was present.
+     *  Used for tuple syntax like (a,) to force tuple interpretation.
+     */
+    def exprsInParensOrBindingsWithTrailingComma(): (List[Tree], Boolean) =
+      if in.token == RPAREN then (Nil, false)
       else in.currentRegion.withCommasExpected {
         var isFormalParams = false
         def exprOrBinding() =
@@ -3153,7 +3194,7 @@ object Parsers {
             val t = maybeNamed(exprInParens)()
             if t.isInstanceOf[ValDef] then isFormalParams = true
             t
-        commaSeparatedRest(exprOrBinding(), exprOrBinding)
+        commaSeparatedRestWithTrailingComma(exprOrBinding(), exprOrBinding)
       }
 
     /** ParArgumentExprs ::= `(' [‘using’] [ExprsInParens] `)'
@@ -3590,7 +3631,10 @@ object Parsers {
       case USCORE =>
         wildcardIdent()
       case LPAREN =>
-        atSpan(in.offset) { makeTupleOrParens(inParensWithCommas(patternsOpt())) }
+        atSpan(in.offset) {
+          val (ts, trailingComma) = inParensWithCommas(patternsOptWithTrailingComma())
+          makeTupleOrParens(ts, trailingComma)
+        }
       case QUOTE =>
         simpleExpr(Location.InPattern)
       case XMLSTART =>
@@ -3627,15 +3671,25 @@ object Parsers {
           case p => p
 
     /** Patterns          ::=  Pattern [`,' Pattern]
-     *                      |  NamedPattern {‘,’ NamedPattern}
+     *                      |  NamedPattern {',' NamedPattern}
      *  NamedPattern      ::=  id '=' Pattern
      */
     def patterns(location: Location = Location.InPattern): List[Tree] =
       commaSeparated(maybeNamed(() => pattern(location)))
         // check that patterns are all named or all unnamed is done at desugaring
 
+    /** Like patterns but also returns whether a trailing comma was present. */
+    def patternsWithTrailingComma(location: Location = Location.InPattern): (List[Tree], Boolean) =
+      commaSeparatedWithTrailingComma(maybeNamed(() => pattern(location)))
+
     def patternsOpt(location: Location = Location.InPattern): List[Tree] =
       if (in.token == RPAREN) Nil else patterns(location)
+
+    /** Like patternsOpt but also returns whether a trailing comma was present.
+     *  Used for tuple syntax like (a,) to force tuple interpretation.
+     */
+    def patternsOptWithTrailingComma(location: Location = Location.InPattern): (List[Tree], Boolean) =
+      if in.token == RPAREN then (Nil, false) else patternsWithTrailingComma(location)
 
     /** ArgumentPatterns  ::=  ‘(’ [Patterns] ‘)’
      *                      |  ‘(’ [Patterns ‘,’] PatVar ‘*’ [‘,’ Patterns] ‘)’
