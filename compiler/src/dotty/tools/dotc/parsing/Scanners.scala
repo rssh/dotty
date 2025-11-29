@@ -774,7 +774,9 @@ object Scanners {
         case COMMA =>
           if closingParens.contains(currentRegion.closedBy) && currentRegion.commasExpected then
             peekAhead()
-            if isAfterLineEnd && closingParens.contains(token) then
+            if isAfterLineEnd && closingParens.contains(token)
+               && !currentRegion.preserveTrailingComma
+            then
               // encountered a trailing comma
               // reset only the lastOffset
               // so that the tree's span is correct
@@ -1692,6 +1694,17 @@ object Scanners {
       commasExpected || this.match
         case r: Indented => !r.isOutermost && r.outer.nn.commasExpectedInEnclosing
         case _ => false
+
+    private var myPreserveTrailingComma: Boolean = false
+
+    inline def withPreserveTrailingComma[T](inline op: => T): T =
+      val saved = myPreserveTrailingComma
+      myPreserveTrailingComma = true
+      val res = op
+      myPreserveTrailingComma = saved
+      res
+
+    def preserveTrailingComma = myPreserveTrailingComma
 
     def toList: List[Region] =
       val outer = this.outer

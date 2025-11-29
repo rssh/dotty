@@ -658,6 +658,19 @@ object Parsers {
     def inParensWithCommas[T](body: => T): T = enclosedWithCommas(LPAREN, body)
     def inBracketsWithCommas[T](body: => T): T = enclosedWithCommas(LBRACKET, body)
 
+    /** Like inParensWithCommas but also preserves trailing comma for tuple detection. */
+    def inParensWithTrailingComma[T](body: => T): T =
+      accept(LPAREN)
+      in.currentRegion.withPreserveTrailingComma:
+        val closing = RPAREN
+        val isEmpty = in.token == closing
+        val ts = body
+        if in.token != closing then
+          val prefix = if !isEmpty && canStartExprTokens3.contains(in.token) then "',' or " else ""
+          syntaxErrorOrIncomplete(ExpectedTokenButFound(closing, in.token, prefix))
+        if in.token == closing then in.nextToken()
+        ts
+
     def inBracesOrIndented[T](body: => T, rewriteWithColon: Boolean = false): T =
       if in.token == INDENT then
         val rewriteToBraces = in.rewriteNoIndent
@@ -1973,26 +1986,38 @@ object Parsers {
         if in.token == RPAREN then
           in.nextToken()
           functionRest(Nil)
+        else if in.token == COMMA then
+          // Empty tuple with comma: (,)
+          in.nextToken()
+          accept(RPAREN)
+          val tuple = atSpan(start)(makeTupleOrParens(Nil, trailingComma = true))
+          typeRest:
+            infixTypeRest(inContextBound):
+              refinedTypeRest:
+                withTypeRest:
+                  annotTypeRest:
+                    simpleTypeRest(tuple)
         else
           val paramStart = in.offset
           def erasedMods(): Modifiers =
             if isErased then addModifier(EmptyModifiers) else EmptyModifiers
           val leadingMods = erasedMods()
           val (args, trailingComma) =
-            in.currentRegion.withCommasExpected:
-              funArgType() match
-                case Ident(name) if name != tpnme.WILDCARD && in.isColon =>
-                  def funParam(start: Offset) =
-                    atSpan(start):
-                      val mods = erasedMods()
-                      typedFunParam(in.offset, ident(), mods)
-                  commaSeparatedRestWithTrailingComma(
-                    typedFunParam(paramStart, name.toTermName, leadingMods),
-                    () => funParam(in.offset))
-                case t =>
-                  if leadingMods.is(Erased) then
-                    report.error(em"Erased function parameter must be named", leadingMods.mods.head.srcPos)
-                  commaSeparatedRestWithTrailingComma(t, funArgType)
+            in.currentRegion.withPreserveTrailingComma:
+              in.currentRegion.withCommasExpected:
+                funArgType() match
+                  case Ident(name) if name != tpnme.WILDCARD && in.isColon =>
+                    def funParam(start: Offset) =
+                      atSpan(start):
+                        val mods = erasedMods()
+                        typedFunParam(in.offset, ident(), mods)
+                    commaSeparatedRestWithTrailingComma(
+                      typedFunParam(paramStart, name.toTermName, leadingMods),
+                      () => funParam(in.offset))
+                  case t =>
+                    if leadingMods.is(Erased) then
+                      report.error(em"Erased function parameter must be named", leadingMods.mods.head.srcPos)
+                    commaSeparatedRestWithTrailingComma(t, funArgType)
           accept(RPAREN)
           if in.isArrow || isPureArrow then
             functionRest(args)
@@ -3064,7 +3089,7 @@ object Parsers {
           atSpan(start) { Ident(pname) }
         case LPAREN =>
           atSpan(in.offset) {
-            val (ts, trailingComma) = inParensWithCommas(exprsInParensOrBindingsWithTrailingComma())
+            val (ts, trailingComma) = inParensWithTrailingComma(exprsInParensOrBindingsWithTrailingComma())
             makeTupleOrParens(ts, trailingComma)
           }
         case LBRACE | INDENT =>
@@ -3185,6 +3210,9 @@ object Parsers {
      */
     def exprsInParensOrBindingsWithTrailingComma(): (List[Tree], Boolean) =
       if in.token == RPAREN then (Nil, false)
+      else if in.token == COMMA then
+        in.nextToken()  // skip the comma
+        (Nil, true)     // empty tuple with comma: (,)
       else in.currentRegion.withCommasExpected {
         var isFormalParams = false
         def exprOrBinding() =
@@ -3632,7 +3660,7 @@ object Parsers {
         wildcardIdent()
       case LPAREN =>
         atSpan(in.offset) {
-          val (ts, trailingComma) = inParensWithCommas(patternsOptWithTrailingComma())
+          val (ts, trailingComma) = inParensWithTrailingComma(patternsOptWithTrailingComma())
           makeTupleOrParens(ts, trailingComma)
         }
       case QUOTE =>
@@ -3689,7 +3717,11 @@ object Parsers {
      *  Used for tuple syntax like (a,) to force tuple interpretation.
      */
     def patternsOptWithTrailingComma(location: Location = Location.InPattern): (List[Tree], Boolean) =
-      if in.token == RPAREN then (Nil, false) else patternsWithTrailingComma(location)
+      if in.token == RPAREN then (Nil, false)
+      else if in.token == COMMA then
+        in.nextToken()  // skip the comma
+        (Nil, true)     // empty tuple with comma: (,)
+      else patternsWithTrailingComma(location)
 
     /** ArgumentPatterns  ::=  ‘(’ [Patterns] ‘)’
      *                      |  ‘(’ [Patterns ‘,’] PatVar ‘*’ [‘,’ Patterns] ‘)’
