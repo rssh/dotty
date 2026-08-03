@@ -35,6 +35,10 @@ enum MigrationVersion(val warnFrom: SourceVersion, val errorFrom: SourceVersion)
   case ImplicitParamsWithoutUsing extends MigrationVersion(`3.7`, future)
   case Scala2Implicits extends MigrationVersion(future, future)
   case IdentifierDollars extends MigrationVersion(`3.9`, never)
+  /** `(a,<newline>)` changes from `a` to `Tuple1(a)`. Not an error in any version: migration mode
+   *  keeps the pre-3.11 meaning and rewrites the comma away.
+   */
+  case TupleTrailingComma extends MigrationVersion(`3.11`, `3.11`)
 
   require(warnFrom.ordinal <= errorFrom.ordinal)
 

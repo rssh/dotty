@@ -1697,9 +1697,9 @@ object Scanners {
 
     private var myPreserveTrailingComma: Boolean = false
 
-    inline def withPreserveTrailingComma[T](inline op: => T): T =
+    inline def withPreserveTrailingComma[T](inline enabled: Boolean)(inline op: => T): T =
       val saved = myPreserveTrailingComma
-      myPreserveTrailingComma = true
+      myPreserveTrailingComma = enabled
       val res = op
       myPreserveTrailingComma = saved
       res

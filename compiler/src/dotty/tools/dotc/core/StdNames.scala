@@ -395,6 +395,7 @@ object StdNames {
     val ThisType: N             = "ThisType"
     val Tuple2: N               = "Tuple2"
     val Tuple: N                = "Tuple"
+    val EmptyTuple: N           = "EmptyTuple"
     val TYPE_ : N               = "TYPE"
     val TypeApply: N            = "TypeApply"
     val TypeRef: N              = "TypeRef"

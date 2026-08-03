@@ -1,6 +1,9 @@
-// Test trailing comma syntax for tuples (full variant)
-// This allows (A,) to be a single-element type tuple and (a,) to be a single-element value tuple
-// Also allows trailing comma for multi-element tuples like (a, b,)
+//> using options -source:3.11
+
+// Trailing comma syntax for tuple types and values.
+// `(a,)` is a single-element tuple, `(,)` is the empty tuple, and a trailing comma is accepted at
+// any arity. Below 3.11 a trailing comma before a closing paren is discarded (SIP-27); see
+// tests/pos/trailingCommas/trailingCommas.scala for that behaviour at the default source version.
 
 object TupleTrailingComma:
   // Type tuples with trailing comma
@@ -13,11 +16,14 @@ object TupleTrailingComma:
   val v2 = (1, 2,)                    // trailing comma with multiple elements
   val v3 = (1, 2)                     // regular tuple (should still work)
 
+  // A single-element tuple really is Tuple1
+  val checkV1: Int *: EmptyTuple = v1
+  val checkV1Elem: Int = v1(0)
+
   // Pattern matching with trailing comma
   def test(x: Any): Unit = x match
     case (a,) => println(s"single: $a")
     case (a, b,) => println(s"pair: $a, $b")
-    case (a, b) => println(s"pair no trailing: $a, $b")
     case _ => println("other")
 
   // With newlines - trailing comma should still be recognized
@@ -50,6 +56,26 @@ object TupleTrailingComma:
 
   type EmptyT = (,)
 
+  val checkEmpty: EmptyTuple = empty1
+
   def testEmpty(x: Any): Unit = x match
     case (,) => println("empty tuple")
     case _ => println("other")
+
+  // Named elements accept the comma too, though it is redundant there: a lone named element was
+  // already a one-element named tuple, so nothing about these changed at 3.11.
+  val n1 = (name = 1,)
+  val checkN1: (name: Int) = n1
+
+  type NT1 = (name: Int,)
+  val n2: NT1 = n1
+
+  val n3 = (id = 1, label = "x",)
+  val checkN3: (id: Int, label: String) = n3
+
+  val n4 = (name = 1,
+  )
+  val checkN4: (name: Int) = n4
+
+  def testNamed(x: (name: Int)): Int = x match
+    case (name = v,) => v

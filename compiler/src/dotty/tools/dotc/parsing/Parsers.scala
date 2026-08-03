@@ -39,6 +39,14 @@ object Parsers {
 
   case class OpInfo(operand: Tree, operator: Ident, offset: Offset)
 
+  /** A trailing comma seen directly before a closing delimiter.
+   *  @param offset        the comma's offset, used to rewrite it away in migration mode
+   *  @param afterLineEnd  whether the closing delimiter starts on a later line. Only this shape
+   *                       was legal before 3.10 (SIP-27 discarded the comma), so it is the only
+   *                       one whose meaning changes and hence the only one that warns.
+   */
+  case class TrailingComma(offset: Offset, afterLineEnd: Boolean)
+
   enum Location(val inParens: Boolean, val inPattern: Boolean, val inArgs: Boolean):
     case InParens      extends Location(true, false, false)
     case InArgs        extends Location(true, false, true)
@@ -658,10 +666,14 @@ object Parsers {
     def inParensWithCommas[T](body: => T): T = enclosedWithCommas(LPAREN, body)
     def inBracketsWithCommas[T](body: => T): T = enclosedWithCommas(LBRACKET, body)
 
-    /** Like inParensWithCommas but also preserves trailing comma for tuple detection. */
+    /** Like inParensWithCommas but, from source version 3.10 on, also preserves a trailing comma
+     *  so that the parser can see it and build a tuple. Below 3.10 the flag stays off, so the
+     *  scanner discards trailing commas exactly as it did before this feature and the parse is
+     *  unchanged.
+     */
     def inParensWithTrailingComma[T](body: => T): T =
       accept(LPAREN)
-      in.currentRegion.withPreserveTrailingComma:
+      in.currentRegion.withPreserveTrailingComma(sourceVersion.enablesTupleTrailingComma):
         val closing = RPAREN
         val isEmpty = in.token == closing
         val ts = body
@@ -690,11 +702,10 @@ object Parsers {
         commaSeparatedRest(part(), part)
       }
 
-    /** Like commaSeparated but also detects trailing comma.
-     *  Returns (list, trailingComma) where trailingComma is true if the list
-     *  ended with a comma followed by a closing token.
+    /** Like commaSeparated but also detects a trailing comma.
+     *  See `commaSeparatedRestWithTrailingComma`.
      */
-    def commaSeparatedWithTrailingComma[T](part: () => T): (List[T], Boolean) =
+    def commaSeparatedWithTrailingComma[T](part: () => T): (List[T], Option[TrailingComma]) =
       in.currentRegion.withCommasExpected {
         commaSeparatedRestWithTrailingComma(part(), part)
       }
@@ -712,21 +723,71 @@ object Parsers {
         ts.toList
       else leading :: Nil
 
-    /** Like commaSeparatedRest but also detects trailing comma.
-     *  Returns (list, trailingComma) where trailingComma is true if the list
-     *  ended with a comma followed by a closing token (RPAREN, RBRACKET, RBRACE).
-     *  Used for tuple syntax like (A,) or (a,).
+    /** Like commaSeparatedRest but also detects a trailing comma, i.e. a comma directly followed
+     *  by a closing token (RPAREN, RBRACKET, RBRACE). Used for tuple syntax like `(A,)` or `(a,)`.
+     *
+     *  A trailing comma only reaches the parser when the enclosing region preserves it, which
+     *  happens from source version 3.10 on; below that the scanner has already discarded it and
+     *  the result is always None.
      */
-    def commaSeparatedRestWithTrailingComma[T](leading: T, part: () => T): (List[T], Boolean) =
+    def commaSeparatedRestWithTrailingComma[T](leading: T, part: () => T): (List[T], Option[TrailingComma]) =
       if in.token == COMMA then
         val ts = new ListBuffer[T] += leading
         while in.token == COMMA do
+          val commaOffset = in.offset
           in.nextToken()
-          if in.token == RPAREN || in.token == RBRACKET || in.token == RBRACE then
-            return (ts.toList, true)
+          // Below 3.10 fall through to `part()`, which reports the same error as before this
+          // feature: the scanner only discards *multi-line* trailing commas, so a single-line
+          // one still reaches here and must stay illegal.
+          if (in.token == RPAREN || in.token == RBRACKET || in.token == RBRACE)
+             && sourceVersion.enablesTupleTrailingComma
+          then
+            return (ts.toList, Some(TrailingComma(commaOffset, in.isAfterLineEnd)))
           ts += part()
-        (ts.toList, false)
-      else (leading :: Nil, false)
+        (ts.toList, None)
+      else (leading :: Nil, None)
+
+    /** Build a tuple or a parenthesized tree from `ts`, which was parsed with the trailing comma
+     *  `tc`, subject to the source version.
+     *
+     *  `tc` is None below source version 3.10, since the scanner discards the comma there, so the
+     *  result matches pre-3.10 behaviour by construction.
+     *
+     *  Exactly one shape changes meaning at 3.10: a single unnamed element followed by a comma and
+     *  a line end, which SIP-27 used to discard. Under `3.10-migration` that shape keeps its old
+     *  meaning, warns, and has the comma rewritten away. A single *named* element is unaffected --
+     *  `makeTupleOrParens` already maps a lone NamedArg to a tuple -- and so are all other arities.
+     */
+    /** The tree for `(,)`, the empty tuple, in term or pattern position.
+     *
+     *  This cannot be `Tuple(Nil)`: that is how `()` is represented, and `desugar.tuple` maps
+     *  arity 0 to `Unit`. Since the point of `(,)` is to denote `EmptyTuple`, which `()` cannot,
+     *  the parser emits a reference to `scala.EmptyTuple` directly. As a stable identifier it
+     *  serves as a pattern too.
+     */
+    def emptyTupleTree: Tree = scalaDot(nme.EmptyTuple)
+
+    /** The tree for `(,)` in type position: the type `scala.EmptyTuple`. */
+    def emptyTupleTypeTree: Tree = scalaDot(tpnme.EmptyTuple)
+
+    def makeTupleOrParensTrailing(ts: List[Tree], tc: Option[TrailingComma]): Tree = tc match
+      case Some(_) if ts.isEmpty => emptyTupleTree
+      case None => makeTupleOrParens(ts)
+      case Some(c) =>
+        val changesMeaning = c.afterLineEnd && (ts match
+          case (_: NamedArg) :: Nil => false
+          case _ :: Nil             => true
+          case _                    => false)
+        if changesMeaning && MigrationVersion.TupleTrailingComma.needsPatch then
+          val span = Span(c.offset, c.offset + 1)
+          report.migrationWarning(
+            em"""From 3.10, a trailing comma makes this a single-element tuple.
+                |To keep the current meaning, remove the trailing comma.""",
+            source.atSpan(span))
+          patch(source, span, "")
+          makeTupleOrParens(ts) // pre-3.10 meaning, allowing the old syntax in migration mode
+        else
+          makeTupleOrParens(ts, trailingComma = true)
 
     def maybeNamed(op: () => Tree): () => Tree = () =>
       if isIdent && in.lookahead.token == EQUALS && sourceVersion.enablesNamedTuples then
@@ -1986,11 +2047,11 @@ object Parsers {
         if in.token == RPAREN then
           in.nextToken()
           functionRest(Nil)
-        else if in.token == COMMA then
+        else if in.token == COMMA && sourceVersion.enablesTupleTrailingComma then
           // Empty tuple with comma: (,)
           in.nextToken()
           accept(RPAREN)
-          val tuple = atSpan(start)(makeTupleOrParens(Nil, trailingComma = true))
+          val tuple = atSpan(start)(emptyTupleTypeTree)
           typeRest:
             infixTypeRest(inContextBound):
               refinedTypeRest:
@@ -2003,7 +2064,7 @@ object Parsers {
             if isErased then addModifier(EmptyModifiers) else EmptyModifiers
           val leadingMods = erasedMods()
           val (args, trailingComma) =
-            in.currentRegion.withPreserveTrailingComma:
+            in.currentRegion.withPreserveTrailingComma(sourceVersion.enablesTupleTrailingComma):
               in.currentRegion.withCommasExpected:
                 funArgType() match
                   case Ident(name) if name != tpnme.WILDCARD && in.isColon =>
@@ -2023,7 +2084,7 @@ object Parsers {
             functionRest(args)
           else
             val tuple = atSpan(start):
-              makeTupleOrParens(args.mapConserve(convertToElem), trailingComma)
+              makeTupleOrParensTrailing(args.mapConserve(convertToElem), trailingComma)
             typeRest:
               infixTypeRest(inContextBound):
                 refinedTypeRest:
@@ -2340,7 +2401,7 @@ object Parsers {
       if in.token == LPAREN then
         atSpan(in.offset) {
           val (ts, trailingComma) = inParensWithCommas(argTypesWithTrailingComma(namedOK = false, wildOK = true, tupleOK = true))
-          makeTupleOrParens(ts, trailingComma)
+          makeTupleOrParensTrailing(ts, trailingComma)
         }
       else if in.token == LBRACE then
         atSpan(in.offset) { RefinedTypeTree(EmptyTree, refinement(indentOK = false)) }
@@ -2434,7 +2495,7 @@ object Parsers {
     /** Like argTypes but also returns whether a trailing comma was present.
      *  Used for tuple syntax like (A,) to force tuple interpretation.
      */
-    def argTypesWithTrailingComma(namedOK: Boolean, wildOK: Boolean, tupleOK: Boolean): (List[Tree], Boolean) =
+    def argTypesWithTrailingComma(namedOK: Boolean, wildOK: Boolean, tupleOK: Boolean): (List[Tree], Option[TrailingComma]) =
       def wildCardCheck(gen: Tree): Tree =
         val t = gen
         if wildOK then t else rejectWildcardType(t)
@@ -3090,7 +3151,7 @@ object Parsers {
         case LPAREN =>
           atSpan(in.offset) {
             val (ts, trailingComma) = inParensWithTrailingComma(exprsInParensOrBindingsWithTrailingComma())
-            makeTupleOrParens(ts, trailingComma)
+            makeTupleOrParensTrailing(ts, trailingComma)
           }
         case LBRACE | INDENT =>
           canApply = false
@@ -3208,11 +3269,13 @@ object Parsers {
     /** Like exprsInParensOrBindings but also returns whether a trailing comma was present.
      *  Used for tuple syntax like (a,) to force tuple interpretation.
      */
-    def exprsInParensOrBindingsWithTrailingComma(): (List[Tree], Boolean) =
-      if in.token == RPAREN then (Nil, false)
-      else if in.token == COMMA then
-        in.nextToken()  // skip the comma
-        (Nil, true)     // empty tuple with comma: (,)
+    def exprsInParensOrBindingsWithTrailingComma(): (List[Tree], Option[TrailingComma]) =
+      if in.token == RPAREN then (Nil, None)
+      else if in.token == COMMA && sourceVersion.enablesTupleTrailingComma then
+        // empty tuple with comma: (,)
+        val commaOffset = in.offset
+        in.nextToken()
+        (Nil, Some(TrailingComma(commaOffset, in.isAfterLineEnd)))
       else in.currentRegion.withCommasExpected {
         var isFormalParams = false
         def exprOrBinding() =
@@ -3661,7 +3724,7 @@ object Parsers {
       case LPAREN =>
         atSpan(in.offset) {
           val (ts, trailingComma) = inParensWithTrailingComma(patternsOptWithTrailingComma())
-          makeTupleOrParens(ts, trailingComma)
+          makeTupleOrParensTrailing(ts, trailingComma)
         }
       case QUOTE =>
         simpleExpr(Location.InPattern)
@@ -3706,8 +3769,8 @@ object Parsers {
       commaSeparated(maybeNamed(() => pattern(location)))
         // check that patterns are all named or all unnamed is done at desugaring
 
-    /** Like patterns but also returns whether a trailing comma was present. */
-    def patternsWithTrailingComma(location: Location = Location.InPattern): (List[Tree], Boolean) =
+    /** Like patterns but also returns the trailing comma, if any. */
+    def patternsWithTrailingComma(location: Location = Location.InPattern): (List[Tree], Option[TrailingComma]) =
       commaSeparatedWithTrailingComma(maybeNamed(() => pattern(location)))
 
     def patternsOpt(location: Location = Location.InPattern): List[Tree] =
@@ -3716,11 +3779,13 @@ object Parsers {
     /** Like patternsOpt but also returns whether a trailing comma was present.
      *  Used for tuple syntax like (a,) to force tuple interpretation.
      */
-    def patternsOptWithTrailingComma(location: Location = Location.InPattern): (List[Tree], Boolean) =
-      if in.token == RPAREN then (Nil, false)
-      else if in.token == COMMA then
-        in.nextToken()  // skip the comma
-        (Nil, true)     // empty tuple with comma: (,)
+    def patternsOptWithTrailingComma(location: Location = Location.InPattern): (List[Tree], Option[TrailingComma]) =
+      if in.token == RPAREN then (Nil, None)
+      else if in.token == COMMA && sourceVersion.enablesTupleTrailingComma then
+        // empty tuple with comma: (,)
+        val commaOffset = in.offset
+        in.nextToken()
+        (Nil, Some(TrailingComma(commaOffset, in.isAfterLineEnd)))
       else patternsWithTrailingComma(location)
 
     /** ArgumentPatterns  ::=  ‘(’ [Patterns] ‘)’

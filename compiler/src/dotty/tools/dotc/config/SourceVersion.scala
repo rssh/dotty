@@ -46,6 +46,10 @@ enum SourceVersion:
   def enablesClauseInterleaving = isAtLeast(`3.6`)
   def enablesNewGivens = isAtLeast(`3.6`)
   def enablesNamedTuples = isAtLeast(`3.7`)
+  /** Trailing comma in parens denotes a tuple: `(a,)` is `Tuple1(a)`, `(,)` is `EmptyTuple`.
+   *  See SIP "Trailing Comma Syntax for Tuple Types and Values".
+   */
+  def enablesTupleTrailingComma = isAtLeast(`3.11`)
   def enablesBetterFors(using Context) = isAtLeast(`3.8`) || (isAtLeast(`3.7`) && isPreviewEnabled)
   /** See PR #23441 and tests/neg/i23435-min */
   def enablesDistributeAnd = !isAtLeast(`future`)
